@@ -15,6 +15,8 @@ from dashscope.audio.asr import RecognitionCallback, RecognitionResult, Recognit
 import dashscope
 import pyaudio
 
+from http import HTTPStatus
+
 import webbrowser
 import ctypes
 
@@ -164,7 +166,6 @@ class Callback(RecognitionCallback):
                                         input=True,
                                         input_device_index=self.stereo_mix_index)
         elif self.voice_source == "mic":
-            self.text_queue.put(f"{self.time_str}: Using default microphone as audio source.\n")
             self.stream = self.mic.open(format=pyaudio.paInt16,
                                         channels=1,
                                         rate=16000,
@@ -184,9 +185,12 @@ class Callback(RecognitionCallback):
     def on_error(self, message) -> None:
         self.text_queue.put(f"{self.time_str}: RecognitionCallback error: {message.message}\n")
         # Stop and close the audio stream if it is running
-        if self.stream.active:
-            self.stream.stop()
-            self.stream.close()
+        try:
+            if self.stream.active:
+                self.stream.stop()
+                self.stream.close()
+        except Exception as e:
+            pass
 
     def on_event(self, result: RecognitionResult) -> None:
         sentence = result.get_sentence()
@@ -299,23 +303,25 @@ class ScreenCapture(object):
 
         # 下：语音识别设置
         self.frame_asr = tk.LabelFrame(self.right_frame, text="Speech Recognition Settings", font=("Arial", 10, "bold"))
-        self.frame_asr.pack(fill="x", padx=2, pady=(10,2))
+        self.frame_asr.pack(fill="x", padx=2, pady=(5,2))
         tk.Label(self.frame_asr, text="API Key").grid(row=0, column=0, sticky="ew", padx=2, pady=2)
         self.ety_api_key = tk.Entry(self.frame_asr, show="*", width=18)
         self.ety_api_key.grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+        self.btn_use_input_api = tk.Button(self.frame_asr, text="Use Input Key", command=self.use_input_api)
+        self.btn_use_input_api.grid(row=1, column=0, columnspan=2, sticky="ew", padx=2, pady=2)
         self.btn_asr_start = tk.Button(self.frame_asr, text="Start SRS", command=self.start_asr, state="normal")
-        self.btn_asr_start.grid(row=2, column=0, sticky="ew", padx=2, pady=2)
+        self.btn_asr_start.grid(row=3, column=0, sticky="ew", padx=2, pady=2)
         self.btn_asr_stop = tk.Button(self.frame_asr, text="Stop SRS", command=self.stop_asr, state="disabled")
-        self.btn_asr_stop.grid(row=2, column=1, sticky="ew", padx=2, pady=2)
+        self.btn_asr_stop.grid(row=3, column=1, sticky="ew", padx=2, pady=2)
         # 两个勾选框分别选择是否开启麦克风和立体声混音监听，默认都勾选        
         self.stereo_mix_index = None
         self._check_stereo_mix()
         self.use_microphone = tk.BooleanVar(value=True)
         self.use_stereo_mix = tk.BooleanVar(value=True if self.stereo_mix_index else False)
         self.check_microphone = tk.Checkbutton(self.frame_asr, text="Microphone", variable=self.use_microphone, command=self._swtch_btn_asr_start)
-        self.check_microphone.grid(row=1, column=0, sticky="ew", padx=2, pady=2)
+        self.check_microphone.grid(row=2, column=0, sticky="ew", padx=2, pady=2)
         self.check_stereo_mix = tk.Checkbutton(self.frame_asr, text="Stereo Mix", variable=self.use_stereo_mix, state="normal" if self.stereo_mix_index else "disabled", command=self._swtch_btn_asr_start)
-        self.check_stereo_mix.grid(row=1, column=1, sticky="ew", padx=2, pady=2)
+        self.check_stereo_mix.grid(row=2, column=1, sticky="ew", padx=2, pady=2)
 
         self.frame_asr.columnconfigure(0, weight=1)
         self.frame_asr.columnconfigure(1, weight=1)
@@ -323,7 +329,7 @@ class ScreenCapture(object):
 
         # 控制面板：一键启动/停止
         self.frame_ctrl = tk.LabelFrame(self.right_frame, text="Control Panel", font=("Arial", 10, "bold"))
-        self.frame_ctrl.pack(fill="x", padx=2, pady=(10,2))
+        self.frame_ctrl.pack(fill="x", padx=2, pady=(5,2))
         self.btn_all_start = tk.Button(self.frame_ctrl, text="Start All", command=self.start_all, state="normal")
         self.btn_all_start.grid(row=0, column=0, padx=2, pady=2, sticky="ew")
         self.btn_all_stop = tk.Button(self.frame_ctrl, text="Stop All", command=self.stop_all, state="disabled")
@@ -333,7 +339,7 @@ class ScreenCapture(object):
 
         # 日志保存路径
         self.frame_save_path = tk.LabelFrame(self.right_frame, text="Log Save Path", font=("Arial", 10, "bold"))
-        self.frame_save_path.pack(fill="x", padx=2, pady=(10,2))
+        self.frame_save_path.pack(fill="x", padx=2, pady=(5,2))
         # 两行布局：第一行为标签和路径，第二行为按钮
         tk.Label(self.frame_save_path, text=f"Last\nSaved", fg='gray').grid(row=0, column=0, sticky="w", padx=2, pady=2)
         self.label_save_path = tk.Label(self.frame_save_path, fg="gray", bd=0, text="None", anchor="w", wraplength=120)
@@ -345,14 +351,14 @@ class ScreenCapture(object):
 
         # add a help button
         self.btn_help = tk.Button(self.right_frame, text="Help", command=self.show_help)
-        self.btn_help.pack(fill="x", padx=2, pady=25)
+        self.btn_help.pack(fill="x", padx=2, pady=5)
 
         btn_github = tk.Button(self.right_frame, text="Visit GitHub", command=self.open_github, bg="black", fg="white")
         btn_github.pack(padx=2, pady=5)
 
         # 退出按钮
         self.btn_sys_out = tk.Button(self.right_frame, text="Exit", command=self.sys_out)
-        self.btn_sys_out.pack(side="bottom", fill="x", padx=2, pady=8)
+        self.btn_sys_out.pack(side="bottom", fill="x", padx=2, pady=5)
 
         # 关闭事件
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -370,7 +376,8 @@ class ScreenCapture(object):
         self.is_setting_sys_not_sleep = False
         self.apikey = None
         self.capture_window = None
-        self.save_path = None  
+        self.save_path = None
+        self.log_filename = None
         self.im = None
         self.mouse_x, self.mouse_y = 0, 0
 
@@ -395,9 +402,13 @@ class ScreenCapture(object):
             do_not_prapare = True
         if not self._check_has_input_api():
             do_not_prapare = True
+        if not self._check_api_key_valid():
+            do_not_prapare = True
         if do_not_prapare:
             return
         
+        if not self.is_setting_sys_not_sleep:
+            self.is_setting_sys_not_sleep = set_system_sleep_state(True, self.text_log)
         if self.btn_start['state'] == 'normal':
             self.start_capture()
         if self.btn_asr_start['state'] == 'normal':
@@ -405,8 +416,6 @@ class ScreenCapture(object):
         self.btn_all_start['state'] = 'disabled'
         self.btn_all_stop['state'] = 'normal'
 
-        if not self.is_setting_sys_not_sleep:
-            self.is_setting_sys_not_sleep = set_system_sleep_state(True, self.text_log)
 
     def stop_all(self):
         # 停止截图和语音识别（仅UI按钮状态切换，功能后续实现）
@@ -473,10 +482,45 @@ class ScreenCapture(object):
             self._text_log_show(f"{self.time_str}: API Key saved to api_key.txt, and will be auto-loaded on next start.\n", "green")
         return True
 
+    def use_input_api(self):
+        self.apikey = self.ety_api_key.get().strip()
+        with open(get_resource_path("api_key.txt"), 'w') as f:
+            f.write(self.apikey)
+        self._text_log_show(f"{self.time_str}: Use new input API Key, update to api_key.txt, and will be auto-loaded on next start.\n", "green")
+
+    def _check_api_key_valid(self):
+        self._text_log_show(f"{self.time_str}: Checking API Key validity...\n", "blue")
+        try:
+            dashscope.api_key = self.apikey
+            messages = [{'role': 'system', 'content': ' '},
+            {'role': 'user', 'content': 'connection test, do not reply anything'}]
+
+            response = dashscope.Generation.call(
+                model='qwen-turbo',
+                messages=messages,
+                result_format='message',  # set the result to be "message" format.
+            )
+
+            if response.status_code == HTTPStatus.OK:
+                # print(response)
+                self._text_log_show(f"{self.time_str}: API Key is valid.\n", "green")
+                return True
+            else:
+                # print('Request id: %s, Status code: %s, error code: %s, error message: %s' % (
+                #     response.request_id, response.status_code,
+                #     response.code, response.message
+                # ))
+                self._text_log_show(f"{self.time_str}: API Key is invalid!\n", "red")
+                return False
+        except Exception as e:
+            self._text_log_show(f"{self.time_str}: API Key is invalid!\n", "red")
+            return False
+
     def start_asr(self):
         if not self._check_has_input_api():
             return
-            
+        if not self._check_api_key_valid():
+            return
         self.btn_asr_start['state'] = 'disabled'
         self.btn_asr_stop['state'] = 'normal'
         self.is_speech_recognizing = True
@@ -488,15 +532,15 @@ class ScreenCapture(object):
             self.btn_all_start['state'] = 'disabled'
             self.btn_all_stop['state'] = 'normal'
 
-        log_filename = os.path.join(self.save_path, f"asr_log_{time.strftime('%Y%m%d-%H%M%S', time.localtime())}.txt")
+        self.log_filename = os.path.join(self.save_path, f"asr_log_{time.strftime('%Y%m%d-%H%M%S', time.localtime())}.txt")
         
         if self.use_microphone.get():
-            self.asr_proc_mic = multiprocessing.Process(target=run_asr_process, args=(log_filename, self.asr_queue, self.apikey, self.stereo_mix_index, "mic"))
+            self.asr_proc_mic = multiprocessing.Process(target=run_asr_process, args=(self.log_filename, self.asr_queue, self.apikey, self.stereo_mix_index, "mic"))
             self.asr_proc_mic.daemon = True
             self.update_mic_state('on')
             self.asr_proc_mic.start()
         if self.use_stereo_mix.get():
-            self.asr_proc_stereo = multiprocessing.Process(target=run_asr_process, args=(log_filename, self.asr_queue, self.apikey, self.stereo_mix_index, "stereo mix"))
+            self.asr_proc_stereo = multiprocessing.Process(target=run_asr_process, args=(self.log_filename, self.asr_queue, self.apikey, self.stereo_mix_index, "stereo mix"))
             self.asr_proc_stereo.daemon = True
             self.update_stereo_mix_state('on')
             self.asr_proc_stereo.start()
@@ -579,7 +623,34 @@ class ScreenCapture(object):
 
         self.state_window.bind("<Button-1>", self._state_window_on_start)
         self.state_window.bind("<B1-Motion>", self._state_window_on_drag)
-        self.state_window.bind("<ButtonRelease-1>", self._state_window_on_stop)
+        def toggle_root(event):
+            if self.root.state() == "normal":
+                self.root.iconify()
+            else:
+                self.root.deiconify()
+                self.root.lift()
+        self.state_window.bind("<Double-Button-1>", toggle_root)
+
+        # 右键菜单
+        self.state_menu = tk.Menu(self.state_window, tearoff=0)
+        self.state_menu.add_command(label="Start Capture", command=self.start_capture)
+        self.state_menu.add_command(label="Stop Capture", command=self.stop_capture)
+        self.state_menu.add_command(label="Start ASR", command=self.start_asr)
+        self.state_menu.add_command(label="Stop ASR", command=self.stop_asr)
+        self.state_menu.add_command(label="Start All", command=self.start_all)
+        self.state_menu.add_command(label="Stop All", command=self.stop_all)
+
+        def show_state_menu(event):
+            # 根据按钮状态设置菜单项可用/禁用
+            self.state_menu.entryconfig("Start Capture", state="normal" if self.btn_start['state']=="normal" else "disabled")
+            self.state_menu.entryconfig("Stop Capture", state="normal" if self.btn_stop['state']=="normal" else "disabled")
+            self.state_menu.entryconfig("Start ASR", state="normal" if self.btn_asr_start['state']=="normal" else "disabled")
+            self.state_menu.entryconfig("Stop ASR", state="normal" if self.btn_asr_stop['state']=="normal" else "disabled")
+            self.state_menu.entryconfig("Start All", state="normal" if self.btn_all_start['state']=="normal" else "disabled")
+            self.state_menu.entryconfig("Stop All", state="normal" if self.btn_all_stop['state']=="normal" else "disabled")
+            self.state_menu.tk_popup(event.x_root, event.y_root)
+
+        self.state_window.bind("<Button-3>", show_state_menu)
     
     def _state_window_on_start(self, event):
         self.mouse_x, self.mouse_y = event.x, event.y
@@ -622,6 +693,7 @@ class ScreenCapture(object):
         self.capture_window = cws.get_capture_window_coor()
         # 显示截图区域信息到文本框, 包含时间
         self.text_info.insert("end", f"{self.time_str}:\n   Capture window:{self.capture_window}\n")
+        self.text_info.see("end")
         self.label_capture_window['text'] = f"({self.capture_window[0]},{self.capture_window[1]})->({self.capture_window[2]},{self.capture_window[3]})"
         if self.capture_window is not None:
             self.btn_start['state'] = 'normal'
@@ -642,7 +714,9 @@ class ScreenCapture(object):
                 self.text_info.see("end")
                 self.update_capture_state('on')
         else:
-            if self.is_capturing: self.text_info.insert("end", f"E={diff:.1f};")
+            if self.is_capturing: 
+                self.text_info.insert("end", f"E={diff:.1f};")
+                self.text_info.see("end")
         
         self.im = im2
 
@@ -657,6 +731,7 @@ class ScreenCapture(object):
         self.sensitivity = self.scb_sensitivity.get()
         self.text_info.insert("end", f"\n{self.time_str}:\n   Capture started!\n")
         self.text_info.insert("end", f"   Check interval={self.capture_interval}s, sensitivity={self.sensitivity}\n")
+        self.text_info.see("end")
         self.btn_start['state'] = 'disabled'
         self.btn_stop['state'] = 'normal'
         self.btn_window_config['state'] = 'disabled'
@@ -681,6 +756,7 @@ class ScreenCapture(object):
 
     def stop_capture(self):
         self.text_info.insert("end", f"\n{self.time_str}:\n   Capture stopped!\n")
+        self.text_info.see("end")
         self.btn_start['state'] = 'normal'
         self.btn_stop['state'] = 'disabled'
         self.is_capturing = False
@@ -699,11 +775,13 @@ class ScreenCapture(object):
 
     def sys_out(self):
         self.stop_all()
+        set_system_sleep_state(False, self.text_log)
         self.root.destroy()
         self.root.quit()
 
-    def on_close(self):        
+    def on_close(self):
         self.stop_all()
+        set_system_sleep_state(False, self.text_log)
         self.root.destroy()
         self.root.quit()
 
