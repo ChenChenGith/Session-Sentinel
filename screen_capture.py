@@ -200,21 +200,21 @@ class Callback(RecognitionCallback):
             # 实时写入日志文件
             if self.log_file:
                 with open(self.log_file, 'a', encoding='utf-8') as f:
-                    f.write(sentence['text'] + '\n')
+                    f.write(f"{self.time_str}: text from {self.voice_source}: {sentence['text']}\n")
 
     @property
     def time_str(self):
         return time.strftime("%Y%m%d-%H%M%S", time.localtime())
 
 
-def run_asr_process(log_filename, text_queue, apikey, stereo_mix_index, source="stereo mix"):
+def run_asr_process(log_filename, text_queue, apikey, model, stereo_mix_index, source="stereo mix"):
     dashscope.api_key = apikey
     callback = Callback(log_file=log_filename, text_queue=text_queue, stereo_mix_index=stereo_mix_index, voice_source=source)
     sample_rate = 16000  # 采样率
     format_pcm = 'pcm'  # 音频数据格式
     block_size = 3200  # 每次读取的帧数
     recognition = Recognition(
-                model='paraformer-realtime-v2',
+                model=model,
                 format=format_pcm,
                 sample_rate=sample_rate,
                 semantic_punctuation_enabled=False,
@@ -304,24 +304,28 @@ class ScreenCapture(object):
         # 下：语音识别设置
         self.frame_asr = tk.LabelFrame(self.right_frame, text="Speech Recognition Settings", font=("Arial", 10, "bold"))
         self.frame_asr.pack(fill="x", padx=2, pady=(5,2))
-        tk.Label(self.frame_asr, text="API Key").grid(row=0, column=0, sticky="ew", padx=2, pady=2)
+        tk.Label(self.frame_asr, text="Model").grid(row=0, column=0, sticky="ew", padx=2, pady=2)
+        self.ety_model = tk.Entry(self.frame_asr, width=18)
+        self.ety_model.insert(0, "fun-asr-realtime-2025-11-07")
+        self.ety_model.grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+        tk.Label(self.frame_asr, text="API Key").grid(row=1, column=0, sticky="ew", padx=2, pady=2)
         self.ety_api_key = tk.Entry(self.frame_asr, show="*", width=18)
-        self.ety_api_key.grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+        self.ety_api_key.grid(row=1, column=1, sticky="ew", padx=2, pady=2)
         self.btn_use_input_api = tk.Button(self.frame_asr, text="Use Input Key", command=self.use_input_api)
-        self.btn_use_input_api.grid(row=1, column=0, columnspan=2, sticky="ew", padx=2, pady=2)
-        self.btn_asr_start = tk.Button(self.frame_asr, text="Start SRS", command=self.start_asr, state="normal")
-        self.btn_asr_start.grid(row=3, column=0, sticky="ew", padx=2, pady=2)
-        self.btn_asr_stop = tk.Button(self.frame_asr, text="Stop SRS", command=self.stop_asr, state="disabled")
-        self.btn_asr_stop.grid(row=3, column=1, sticky="ew", padx=2, pady=2)
+        self.btn_use_input_api.grid(row=2, column=0, columnspan=2, sticky="ew", padx=2, pady=2)
+        self.btn_asr_start = tk.Button(self.frame_asr, text="Start ASR", command=self.start_asr, state="normal")
+        self.btn_asr_start.grid(row=4, column=0, sticky="ew", padx=2, pady=2)
+        self.btn_asr_stop = tk.Button(self.frame_asr, text="Stop ASR", command=self.stop_asr, state="disabled")
+        self.btn_asr_stop.grid(row=4, column=1, sticky="ew", padx=2, pady=2)
         # 两个勾选框分别选择是否开启麦克风和立体声混音监听，默认都勾选        
         self.stereo_mix_index = None
         self._check_stereo_mix()
         self.use_microphone = tk.BooleanVar(value=True)
         self.use_stereo_mix = tk.BooleanVar(value=True if self.stereo_mix_index else False)
         self.check_microphone = tk.Checkbutton(self.frame_asr, text="Microphone", variable=self.use_microphone, command=self._swtch_btn_asr_start)
-        self.check_microphone.grid(row=2, column=0, sticky="ew", padx=2, pady=2)
+        self.check_microphone.grid(row=3, column=0, sticky="ew", padx=2, pady=2)
         self.check_stereo_mix = tk.Checkbutton(self.frame_asr, text="Stereo Mix", variable=self.use_stereo_mix, state="normal" if self.stereo_mix_index else "disabled", command=self._swtch_btn_asr_start)
-        self.check_stereo_mix.grid(row=2, column=1, sticky="ew", padx=2, pady=2)
+        self.check_stereo_mix.grid(row=3, column=1, sticky="ew", padx=2, pady=2)
 
         self.frame_asr.columnconfigure(0, weight=1)
         self.frame_asr.columnconfigure(1, weight=1)
@@ -375,6 +379,7 @@ class ScreenCapture(object):
         self.is_asr_queue_checking = False
         self.is_setting_sys_not_sleep = False
         self.apikey = None
+        self.model = None
         self.capture_window = None
         self.save_path = None
         self.log_filename = None
@@ -400,7 +405,7 @@ class ScreenCapture(object):
         if self.capture_window is None:
             self._text_log_show(f"{self.time_str}: Please select capture window first!\n", "red")
             do_not_prapare = True
-        if not self._check_has_input_api():
+        if not self._check_has_input_api_model():
             do_not_prapare = True
         if not self._check_api_key_valid():
             do_not_prapare = True
@@ -458,7 +463,9 @@ class ScreenCapture(object):
         else:
             self._text_log_show(f"{self.time_str}: Can use 'Stereo Mix' device (index={self.stereo_mix_index}) as audio source.\n", "green")
 
-    def _check_has_input_api(self):
+    def _check_has_input_api_model(self):
+        # 获取model
+        self.model = self.ety_model.get().strip()
         # 检查是否有已有api key
         if self.apikey:
             return True
@@ -517,7 +524,7 @@ class ScreenCapture(object):
             return False
 
     def start_asr(self):
-        if not self._check_has_input_api():
+        if not self._check_has_input_api_model():
             return
         if not self._check_api_key_valid():
             return
@@ -535,12 +542,12 @@ class ScreenCapture(object):
         self.log_filename = os.path.join(self.save_path, f"asr_log_{time.strftime('%Y%m%d-%H%M%S', time.localtime())}.txt")
         
         if self.use_microphone.get():
-            self.asr_proc_mic = multiprocessing.Process(target=run_asr_process, args=(self.log_filename, self.asr_queue, self.apikey, self.stereo_mix_index, "mic"))
+            self.asr_proc_mic = multiprocessing.Process(target=run_asr_process, args=(self.log_filename, self.asr_queue, self.apikey, self.model, self.stereo_mix_index, "mic"))
             self.asr_proc_mic.daemon = True
             self.update_mic_state('on')
             self.asr_proc_mic.start()
         if self.use_stereo_mix.get():
-            self.asr_proc_stereo = multiprocessing.Process(target=run_asr_process, args=(self.log_filename, self.asr_queue, self.apikey, self.stereo_mix_index, "stereo mix"))
+            self.asr_proc_stereo = multiprocessing.Process(target=run_asr_process, args=(self.log_filename, self.asr_queue, self.apikey, self.model, self.stereo_mix_index, "stereo mix"))
             self.asr_proc_stereo.daemon = True
             self.update_stereo_mix_state('on')
             self.asr_proc_stereo.start()
@@ -800,7 +807,7 @@ class ScreenCapture(object):
         try:
             img = Image.open(help_img_path)
             # Initial scale 50%
-            scale = 0.5
+            scale = 0.3
             img_resized = img.resize((int(img.width * scale), int(img.height * scale)), Image.LANCZOS if hasattr(Image, 'LANCZOS') else Image.BICUBIC)
             tk_img = ImageTk.PhotoImage(img_resized)
             label_img = tk.Label(win_img, image=tk_img)

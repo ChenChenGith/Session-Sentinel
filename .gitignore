@@ -3,3 +3,5 @@ build/*
 dist
 dist/*
 *.spec
+
+api_key.txt
