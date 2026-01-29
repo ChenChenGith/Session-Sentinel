@@ -387,6 +387,8 @@ class ScreenCapture(object):
         self.mouse_x, self.mouse_y = 0, 0
 
         self.asr_queue = multiprocessing.Queue()
+        
+        self.monitoring_countdown = 0
 
         self.__init_state_window()
         self.root.mainloop()
@@ -678,6 +680,7 @@ class ScreenCapture(object):
     def update_capture_state(self, func='off'):
         if func == 'on':
             self.label_capture_state["bg"] = "red"
+            self.state_window.after(min(500, int(self.capture_interval * 1000 / 2)), lambda: self.update_capture_state('off'))
         elif func == 'off':
             self.label_capture_state["bg"] = "orange"
 
@@ -705,8 +708,20 @@ class ScreenCapture(object):
         if self.capture_window is not None:
             self.btn_start['state'] = 'normal'
 
+    def _update_monitoring_countdown(self):
+        if not self.is_capturing:
+            self.label_monitoring_state["text"] = "S-M"
+            return
+        remaining_time = self.capture_interval - self.monitoring_countdown
+        self.label_monitoring_state["text"] = f"{remaining_time:.0f}"
+        self.monitoring_countdown += 1
+        if remaining_time > 0:
+            self.state_window.after(1000, self._update_monitoring_countdown)
+
     def capture(self):
-        self.update_capture_state('off')
+        self.update_capture_state('off')        
+        self.monitoring_countdown = 0
+        self._update_monitoring_countdown()
 
         im2 = ImageGrab.grab(bbox=self.capture_window, include_layered_windows=False, all_screens=True)
 

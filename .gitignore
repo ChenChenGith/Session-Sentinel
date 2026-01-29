@@ -5,3 +5,4 @@ dist/*
 *.spec
 
 api_key.txt
+/.claude
