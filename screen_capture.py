@@ -590,6 +590,7 @@ class ScreenCapture(object):
 
     def use_input_api(self):
         self.apikey = self.ety_api_key.get().strip()
+        self.model = self.ety_model.get().strip()
         config = load_config()
         config["dashscope"]["api_key"] = self.apikey
         config["dashscope"]["model"] = self.model
