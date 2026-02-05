@@ -6,3 +6,4 @@ dist/*
 
 api_key.txt
 /.claude
+config.json

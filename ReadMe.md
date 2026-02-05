@@ -13,9 +13,9 @@ Requirment:
 
 # Usage:
 
-![alt text](asset/help_image.png)
+![How to use: png](asset/help_image.png)
 
-[使用说明](./asset/help_md.md)
+[How to use: text](./asset/help_md.md)
 
 # Update
 
@@ -44,6 +44,10 @@ Modify the initial location of the float window, to let user note it.
 Add a checkbox to allow user to chose whether display float window.
 
 Add a button for opening the image save path.
+
+## 20260205
+
+Add meeting summary function, you can click “Minutes Summary” to use it !
 
 # TODO:
 

@@ -157,11 +157,44 @@ def load_config():
             "model": "fun-asr-realtime-2025-11-07"
         },
         "llm": {
-            "api_url": "",
+            "api_url": "https://api.deepseek.com",
             "api_key": "",
-            "model": ""
+            "model": "deepseek-chat"
+        },
+        "prompt": {
+            "no_image": """请将以下会议录音内容整理成Markdown格式的会议纪要。
+
+要求：
+1. 提取会议主题、时间、参与者等基本信息
+2. 总结会议的主要讨论内容
+3. 列出关键决策和行动项
+4. 使用清晰的Markdown格式，包括标题、列表等
+
+会议录音内容：
+{asr_content}
+""",
+            "with_image": """请将以下会议录音内容整理成Markdown格式的会议纪要。
+会议中共有{image_count}张PPT截图，请按照截图出现的时间顺序，为每张截图编写对应的主旨摘要。
+截图标记格式为：'[SCREENSHOT: 文件名]'，请根据截图标记将录音内容分段。
+输出格式要求：每张截图显示后，紧接对应的主旨摘要，截图要采用Markdown图片语法来引入。
+
+会议录音内容：
+{asr_content}
+
+可用的截图文件列表：
+{image_list}
+
+请输出Markdown格式的会议纪要。"""
         }
     }
+    # 如果配置文件不存在，创建默认配置文件
+    if not os.path.exists(config_file):
+        try:
+            with open(config_file, 'w', encoding='utf-8') as f:
+                json.dump(default_config, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
+    # 加载配置文件
     if os.path.exists(config_file):
         try:
             with open(config_file, 'r', encoding='utf-8') as f:
@@ -346,7 +379,7 @@ class ScreenCapture(object):
         tk.Label(self.frame_asr, text="API Key").grid(row=1, column=0, sticky="ew", padx=2, pady=2)
         self.ety_api_key = tk.Entry(self.frame_asr, show="*", width=18)
         self.ety_api_key.grid(row=1, column=1, sticky="ew", padx=2, pady=2)
-        self.btn_use_input_api = tk.Button(self.frame_asr, text="Use Input Key", command=self.use_input_api)
+        self.btn_use_input_api = tk.Button(self.frame_asr, text="Update Model&Key to config.json", command=self.use_input_api)
         self.btn_use_input_api.grid(row=2, column=0, columnspan=2, sticky="ew", padx=2, pady=2)
         self.btn_asr_start = tk.Button(self.frame_asr, text="Start ASR", command=self.start_asr, state="normal")
         self.btn_asr_start.grid(row=4, column=0, sticky="ew", padx=2, pady=2)
@@ -388,16 +421,16 @@ class ScreenCapture(object):
         self.frame_save_path.columnconfigure(1, weight=1)
         self.frame_save_path.columnconfigure(2, weight=0)
 
+        # Minutes Summary按钮
+        self.btn_minutes_summary = tk.Button(self.right_frame, text="Minutes Summary", command=self.open_minutes_summary, bg="green", fg="white")
+        self.btn_minutes_summary.pack(fill="x", padx=2, pady=5)
+
         # add a help button
         self.btn_help = tk.Button(self.right_frame, text="Help", command=self.show_help)
         self.btn_help.pack(fill="x", padx=2, pady=5)
 
         btn_github = tk.Button(self.right_frame, text="Visit GitHub", command=self.open_github, bg="black", fg="white")
         btn_github.pack(padx=2, pady=5)
-
-        # Minutes Summary按钮
-        self.btn_minutes_summary = tk.Button(self.right_frame, text="Minutes Summary", command=self.open_minutes_summary)
-        self.btn_minutes_summary.pack(fill="x", padx=2, pady=5)
 
         # 退出按钮
         self.btn_sys_out = tk.Button(self.right_frame, text="Exit", command=self.sys_out)
@@ -426,12 +459,30 @@ class ScreenCapture(object):
         self.mouse_x, self.mouse_y = 0, 0
 
         self.asr_queue = multiprocessing.Queue()
-        
+
         self.monitoring_countdown = 0
+
+        # 加载配置到文本框
+        self._load_config_to_ui()
 
         self.__init_state_window()
         self.root.mainloop()
     
+    def _load_config_to_ui(self):
+        """加载配置到UI文本框"""
+        config = load_config()
+        # 加载 ASR API Key
+        dashscope_key = config.get("dashscope", {}).get("api_key", "")
+        if dashscope_key:
+            self.apikey = dashscope_key
+            self.ety_api_key.delete(0, "end")
+            self.ety_api_key.insert(0, self.apikey)
+        # 加载 ASR Model
+        dashscope_model = config.get("dashscope", {}).get("model", "")
+        if dashscope_model:
+            self.ety_model.delete(0, "end")
+            self.ety_model.insert(0, dashscope_model)
+
     def _text_log_show(self, msg, color=None):
         if color:
             self.text_log.insert("end", msg, color)
@@ -535,6 +586,7 @@ class ScreenCapture(object):
         self.apikey = self.ety_api_key.get().strip()
         config = load_config()
         config["dashscope"]["api_key"] = self.apikey
+        config["dashscope"]["model"] = self.model
         save_config(config)
         self._text_log_show(f"{self.time_str}: Use new input API Key, update to config.json, and will be auto-loaded on next start.\n", "green")
 
@@ -921,7 +973,7 @@ class MinutesSummaryWindow:
     def __init__(self, parent, default_dir):
         self.window = tk.Toplevel(parent)
         self.window.title("Minutes Summary")
-        self.window.geometry("500x280")
+        self.window.geometry("500x350")
 
         # 主frame
         self.main_frame = tk.Frame(self.window)
@@ -943,6 +995,9 @@ class MinutesSummaryWindow:
         self.ety_model = tk.Entry(self.frame_llm, width=40)
         self.ety_model.grid(row=2, column=1, sticky="ew", padx=5, pady=2)
 
+        self.btn_update_llm_config = tk.Button(self.frame_llm, text="Update LLM Config to config.json", command=self.save_llm_config)
+        self.btn_update_llm_config.grid(row=3, column=0, columnspan=2, sticky="ew", padx=5, pady=5)
+
         self.frame_llm.columnconfigure(1, weight=1)
 
         # 目录选择
@@ -959,9 +1014,18 @@ class MinutesSummaryWindow:
         self.btn_run = tk.Button(self.main_frame, text="Run Minutes Summary", command=self.run_summary, bg="green", fg="white", font=("Arial", 11, "bold"))
         self.btn_run.pack(fill="x", pady=(20, 5))
 
+        # 状态栏
+        self.status_var = tk.StringVar()
+        self.status_var.set("Ready")
+        self.label_status = tk.Label(self.main_frame, textvariable=self.status_var, fg="gray", anchor="w", relief="sunken", bd=1)
+        self.label_status.pack(fill="x", pady=(10, 0))
+
         # 加载已保存的配置
         self.load_llm_config()
         self.working_dir = default_dir
+
+        # 初始化运行状态
+        self.is_running = False
 
     def load_llm_config(self):
         """加载LLM API配置"""
@@ -978,13 +1042,19 @@ class MinutesSummaryWindow:
         config["llm"]["api_key"] = self.ety_api_key.get().strip()
         config["llm"]["model"] = self.ety_model.get().strip()
         save_config(config)
+        self.update_status("LLM config saved successfully!", "green")
 
     def browse_directory(self):
         """浏览并选择会议目录"""
-        directory = filedialog.askdirectory(initialdir=self.working_dir)
+        directory = filedialog.askdirectory(initialdir=self.working_dir, parent=self.window)
         if directory:
             self.working_dir = directory
             self.label_dir.config(text=directory)
+
+    def update_status(self, message, color="gray"):
+        """更新状态栏"""
+        self.status_var.set(message)
+        self.label_status.config(fg=color)
 
     def run_summary(self):
         """运行会议纪要整理"""
@@ -996,21 +1066,18 @@ class MinutesSummaryWindow:
         model = self.ety_model.get().strip()
 
         if not api_url or not api_key or not model:
-            from tkinter import messagebox
-            messagebox.showerror("Error", "Please fill in all LLM API settings!")
+            self.update_status("Error: Please fill in all LLM API settings!", "red")
             return
 
         # 检查目录是否存在
         if not os.path.exists(self.working_dir):
-            from tkinter import messagebox
-            messagebox.showerror("Error", f"Directory {self.working_dir} does not exist!")
+            self.update_status(f"Error: Directory {self.working_dir} does not exist!", "red")
             return
 
         # 查找asr_log文件
         asr_files = [f for f in os.listdir(self.working_dir) if f.startswith("asr_log_") and f.endswith(".txt")]
         if not asr_files:
-            from tkinter import messagebox
-            messagebox.showerror("Error", "No ASR log files found in the directory!")
+            self.update_status("Error: No ASR log files found in the directory!", "red")
             return
 
         # 读取最新的日志文件
@@ -1021,18 +1088,26 @@ class MinutesSummaryWindow:
             with open(asr_file_path, 'r', encoding='utf-8') as f:
                 asr_content = f.read()
         except Exception as e:
-            from tkinter import messagebox
-            messagebox.showerror("Error", f"Error reading ASR log: {str(e)}")
+            self.update_status(f"Error reading ASR log: {str(e)}", "red")
             return
 
         # 检查目录中是否有图片
         image_files = [f for f in os.listdir(self.working_dir) if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
         image_files.sort()  # 按文件名排序
 
+        # 从配置文件读取prompt模板
+        config = load_config()
+        prompt_config = config.get("prompt", {})
+
         # 构建prompt
         if not image_files:
             # 没有图片：纯会议纪要
-            prompt = f"""请将以下会议录音内容整理成Markdown格式的会议纪要。
+            prompt_template = prompt_config.get("no_image")
+            if prompt_template:
+                prompt = prompt_template.format(asr_content=asr_content)
+            else:
+                # 使用默认模板
+                prompt = f"""请将以下会议录音内容整理成Markdown格式的会议纪要。
 
 要求：
 1. 提取会议主题、时间、参与者等基本信息
@@ -1045,29 +1120,69 @@ class MinutesSummaryWindow:
 """
         else:
             # 有图片：按截图顺序整理
-            # 构建图片和对应的语音内容段落
-            prompt_parts = []
-            prompt_parts.append(f"请将以下会议录音内容整理成Markdown格式的会议纪要。")
-            prompt_parts.append(f"会议中共有{len(image_files)}张PPT截图，请按照截图出现的时间顺序，为每张截图编写对应的主旨摘要。")
-            prompt_parts.append(f"截图标记格式为：'[SCREENSHOT: 文件名]'，请根据截图标记将录音内容分段。")
-            prompt_parts.append(f"输出格式要求：每张截图显示后，紧接对应的主旨摘要。")
+            prompt_template = prompt_config.get("with_image")
+            if prompt_template:
+                image_list = "\n".join([f"- {img}" for img in image_files])
+                prompt = prompt_template.format(
+                    image_count=len(image_files),
+                    asr_content=asr_content,
+                    image_list=image_list
+                )
+            else:
+                # 使用默认模板
+                prompt_parts = []
+                prompt_parts.append(f"请将以下会议录音内容整理成Markdown格式的会议纪要。")
+                prompt_parts.append(f"会议中共有{len(image_files)}张PPT截图，请按照截图出现的时间顺序，为每张截图编写对应的主旨摘要。")
+                prompt_parts.append(f"截图标记格式为：'[SCREENSHOT: 文件名]'，请根据截图标记将录音内容分段。")
+                prompt_parts.append(f"输出格式要求：每张截图显示后，紧接对应的主旨摘要，截图要采用Markdown图片语法来引入。")
 
-            prompt_parts.append(f"\n会议录音内容：")
-            prompt_parts.append(asr_content)
+                prompt_parts.append(f"\n会议录音内容：")
+                prompt_parts.append(asr_content)
 
-            prompt_parts.append(f"\n\n可用的截图文件列表：")
-            for img in image_files:
-                prompt_parts.append(f"- {img}")
+                prompt_parts.append(f"\n\n可用的截图文件列表：")
+                for img in image_files:
+                    prompt_parts.append(f"- {img}")
 
-            prompt_parts.append(f"\n\n请输出Markdown格式的会议纪要。")
-            prompt = "\n".join(prompt_parts)
+                prompt_parts.append(f"\n\n请输出Markdown格式的会议纪要。")
+                prompt = "\n".join(prompt_parts)
 
-        # 调用LLM API
+        # 禁用按钮，启动后台线程
+        self.btn_run.config(state="disabled")
+        self.update_status("Starting LLM API call...", "blue")
+
+        # 记录开始时间，启动计时器
+        self.start_time = time.time()
+        self.is_running = True
+        self._update_timer()
+
+        # 启动后台线程执行LLM调用
+        import threading
+        thread = threading.Thread(target=self._run_summary_thread, args=(api_url, api_key, model, prompt))
+        thread.daemon = True
+        thread.start()
+
+    def _update_timer(self):
+        """更新计时器显示"""
+        if self.is_running:
+            elapsed = int(time.time() - self.start_time)
+            self.update_status(f"Running... Elapsed: {elapsed}s", "blue")
+            # 每秒更新一次
+            self.window.after(1000, self._update_timer)
+
+    def _run_summary_thread(self, api_url, api_key, model, prompt):
+        """后台线程执行LLM调用"""
         try:
-            from tkinter import messagebox
-            messagebox.showinfo("Info", "Generating meeting minutes, please wait...")
+            # 构建API请求（OpenAI协议格式）
+            # 确保URL包含完整的endpoint路径
+            if "/chat/completions" not in api_url:
+                if api_url.endswith("/"):
+                    api_url = api_url + "chat/completions"
+                else:
+                    api_url = api_url + "/chat/completions"
 
-            # 构建API请求（假设使用OpenAI格式）
+            # 更新状态：正在调用API
+            self.window.after(0, lambda: self.update_status("Calling LLM API, please wait...", "blue"))
+
             headers = {
                 "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json"
@@ -1081,9 +1196,15 @@ class MinutesSummaryWindow:
                 "temperature": 0.7
             }
 
+            # 更新状态：发送请求
+            self.window.after(0, lambda: self.update_status("Sending request to LLM API...", "blue"))
+
             response = requests.post(api_url, headers=headers, json=payload, timeout=300)
 
             if response.status_code == 200:
+                # 更新状态：处理响应
+                self.window.after(0, lambda: self.update_status("Processing LLM response...", "blue"))
+
                 result = response.json()
                 # 根据不同API格式提取内容
                 if "choices" in result:
@@ -1100,13 +1221,21 @@ class MinutesSummaryWindow:
                 with open(md_filepath, 'w', encoding='utf-8') as f:
                     f.write(markdown_content)
 
-                messagebox.showinfo("Success", f"Meeting minutes saved to:\n{md_filepath}")
+                # 更新状态：成功
+                self.window.after(0, lambda: self.update_status(f"Success! Saved to: {md_filepath}", "green"))
             else:
-                messagebox.showerror("Error", f"LLM API call failed: {response.status_code}\n{response.text}")
+                # 更新状态：失败
+                error_msg = f"LLM API call failed: {response.status_code}"
+                self.window.after(0, lambda: self.update_status(error_msg, "red"))
 
+        except requests.exceptions.Timeout:
+            self.window.after(0, lambda: self.update_status("Error: LLM API call timeout!", "red"))
         except Exception as e:
-            from tkinter import messagebox
-            messagebox.showerror("Error", f"Error calling LLM API: {str(e)}")
+            self.window.after(0, lambda: self.update_status(f"Error: {str(e)}", "red"))
+        finally:
+            # 停止计时器，恢复按钮状态
+            self.is_running = False
+            self.window.after(0, lambda: self.btn_run.config(state="normal"))
 
 if __name__ == "__main__":
     multiprocessing.freeze_support()  # 兼容 Windows exe
