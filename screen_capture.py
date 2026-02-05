@@ -166,7 +166,7 @@ def load_config():
 
 要求：
 1. 提取会议主题、时间、参与者等基本信息
-2. 总结会议的主要讨论内容
+2. 总结会议的主要讨论内容，按条目列出
 3. 列出关键决策和行动项
 4. 使用清晰的Markdown格式，包括标题、列表等
 
@@ -177,6 +177,12 @@ def load_config():
 会议中共有{image_count}张PPT截图，请按照截图出现的时间顺序，为每张截图编写对应的主旨摘要。
 截图标记格式为：'[SCREENSHOT: 文件名]'，请根据截图标记将录音内容分段。
 输出格式要求：每张截图显示后，紧接对应的主旨摘要，截图要采用Markdown图片语法来引入。
+
+要求：
+1. 提取会议主题、时间、参与者等基本信息
+2. 总结会议的主要讨论内容，按条目列出
+3. 列出关键决策和行动项
+4. 使用清晰的Markdown格式，包括标题、列表等
 
 会议录音内容：
 {asr_content}
@@ -376,7 +382,7 @@ class ScreenCapture(object):
         self.ety_model = tk.Entry(self.frame_asr, width=18)
         self.ety_model.insert(0, "fun-asr-realtime-2025-11-07")
         self.ety_model.grid(row=0, column=1, sticky="ew", padx=2, pady=2)
-        tk.Label(self.frame_asr, text="API Key").grid(row=1, column=0, sticky="ew", padx=2, pady=2)
+        tk.Label(self.frame_asr, text="dashscope API Key").grid(row=1, column=0, sticky="ew", padx=2, pady=2)
         self.ety_api_key = tk.Entry(self.frame_asr, show="*", width=18)
         self.ety_api_key.grid(row=1, column=1, sticky="ew", padx=2, pady=2)
         self.btn_use_input_api = tk.Button(self.frame_asr, text="Update Model&Key to config.json", command=self.use_input_api)
@@ -506,10 +512,10 @@ class ScreenCapture(object):
         
         if not self.is_setting_sys_not_sleep:
             self.is_setting_sys_not_sleep = set_system_sleep_state(True, self.text_log)
-        if self.btn_start['state'] == 'normal':
-            self.start_capture()
         if self.btn_asr_start['state'] == 'normal':
             self.start_asr()
+        if self.btn_start['state'] == 'normal':
+            self.start_capture()
         self.btn_all_start['state'] = 'disabled'
         self.btn_all_stop['state'] = 'normal'
 
@@ -871,6 +877,10 @@ class ScreenCapture(object):
 
         self.im = ImageGrab.grab(bbox=self.capture_window, include_layered_windows=False, all_screens=True)
         self.im.save(rf'{self.save_path}\{self.time_str}.png')
+        if self.is_speech_recognizing:
+            img_filename = os.path.basename(rf'{self.save_path}\{self.time_str}.png')
+            self.asr_queue.put(f"SCREENSHOT:{img_filename}")
+
         self.im_l, self.im_w = self.im.size
         self.im_l, self.im_w = self.im_l/1000, self.im_w/1000
 
