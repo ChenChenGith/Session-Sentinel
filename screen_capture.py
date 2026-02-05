@@ -334,7 +334,7 @@ class ScreenCapture(object):
 
         # 左侧信息区
         self.left_frame = tk.Frame(self.main_frame)
-        self.left_frame.place(relx=0.02, rely=0.03, relwidth=0.7, relheight=0.94)
+        self.left_frame.place(relx=0.02, rely=0.03, relwidth=0.68, relheight=0.94)
         # 上：截图信息
         tk.Label(self.left_frame, text="Screen Capture Info", anchor="w", font=("Arial", 11, "bold")).pack(fill="x")
         self.text_info = tk.Text(self.left_frame, height=18)
@@ -351,7 +351,7 @@ class ScreenCapture(object):
 
         # 右侧设置区
         self.right_frame = tk.Frame(self.main_frame)
-        self.right_frame.place(relx=0.74, rely=0.03, relwidth=0.24, relheight=0.94)
+        self.right_frame.place(relx=0.71, rely=0.03, relwidth=0.28, relheight=0.94)
 
         # 上：截图设置
         self.frame_cap = tk.LabelFrame(self.right_frame, text="Screen Capture Settings", font=("Arial", 10, "bold"))
