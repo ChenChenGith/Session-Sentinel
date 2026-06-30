@@ -16,6 +16,8 @@ import requests
 from dashscope.audio.asr import RecognitionCallback, RecognitionResult, Recognition
 import dashscope
 import pyaudio
+import pyaudiowpatch as pyaudio_patch
+import struct
 
 from http import HTTPStatus
 
@@ -32,25 +34,36 @@ def get_all_display_info():
     
     return max(x) - min(x), max(y) - min(y), min(x), min(y)
 
-def find_stereo_mix_device(mic):
-    keyword_list = ["stereo mix", "立体声混音"]
-    for i in range(mic.get_device_count()):
-        info = mic.get_device_info_by_index(i)
-        name = info.get('name', '').lower()
-        if info.get('maxInputChannels', 0) > 0:
-            for kw in keyword_list:
-                if kw in name:
-                    # 尝试打开设备，能打开才算可用
-                    try:
-                        test_stream = mic.open(format=pyaudio.paInt16,
-                                              channels=1,
-                                              rate=16000,
-                                              input=True,
-                                              input_device_index=i)
-                        test_stream.close()
-                        return i
-                    except Exception as e:
-                        continue
+def find_loopback_device():
+    """查找 WASAPI loopback 设备（系统音频捕获，无需开启立体声混音）。
+
+    优先使用默认输出设备的 loopback：默认渲染端点的音频引擎始终运行，
+    即使系统静音也会持续产出数据，read() 不会阻塞。
+    必须调用 get_default_wasapi_loopback()——本机 pyaudiowpatch 版本没有
+    get_default_loopback()，若误用会抛 AttributeError 回退到遍历，可能选到
+    非默认、引擎未运行的 loopback 设备，导致 read() 阻塞、ASR 23 秒后超时。
+    """
+    p = pyaudio_patch.PyAudio()
+    try:
+        default_loopback = p.get_default_wasapi_loopback()
+        if default_loopback:
+            p.terminate()
+            return default_loopback['index']
+    except Exception:
+        pass
+    # 回退：遍历查找所有 loopback 设备（非默认设备在无音频时 read() 可能阻塞）
+    found = []
+    for i in range(p.get_device_count()):
+        info = p.get_device_info_by_index(i)
+        is_loopback = info.get('isLoopback') or info.get('isLoopbackDevice')
+        # 某些 pyaudiowpatch 版本标记字段不可靠，通过名称辅助判断
+        if not is_loopback and '[Loopback]' in info.get('name', ''):
+            is_loopback = True
+        if is_loopback:
+            found.append(i)
+    p.terminate()
+    if found:
+        return found[0]
     return None
 
 class Capture_window_select(object):
@@ -154,12 +167,12 @@ def load_config():
     default_config = {
         "dashscope": {
             "api_key": "",
-            "model": "fun-asr-realtime-2025-11-07"
+            "model": "fun-asr-realtime-2026-02-28"
         },
         "llm": {
             "api_url": "https://api.deepseek.com",
             "api_key": "",
-            "model": "deepseek-chat"
+            "model": "deepseek-v4-flash"
         },
         "prompt": {
             "no_image": """请将以下会议录音内容整理成Markdown格式的会议纪要。
@@ -221,25 +234,39 @@ def save_config(config):
 
 # Real-time speech recognition callback
 class Callback(RecognitionCallback):
-    def __init__(self, log_file, text_queue, stereo_mix_index=None, voice_source="stereo mix"):
+    def __init__(self, log_file, text_queue, loopback_index=None, voice_source="system audio"):
         super().__init__()
         self.log_file = log_file
         self.text_queue = text_queue
         self.mic = None
         self.stream = None
         self.voice_source = voice_source
-        self.stereo_mix_index = stereo_mix_index
+        self.loopback_index = loopback_index
+        self.device_rate = 0
+        self.device_channels = 0
 
     def on_open(self) -> None:
-        self.text_queue.put(f"{self.time_str}: Speech recognition started, using {self.voice_source}.\n")
-        self.mic = pyaudio.PyAudio()
-        if self.voice_source == "stereo mix":            
+        self.text_queue.put(f"{self.time_str}: Speech recognition started, using [{self.voice_source}].\n")
+        if self.voice_source == "system audio":
+            # WASAPI loopback：从默认输出设备回环捕获，无需开启立体声混音
+            self.mic = pyaudio_patch.PyAudio()
+            device_info = self.mic.get_device_info_by_index(self.loopback_index)
+            # loopback 作为输入设备：优先用 maxInputChannels，为 0 时回退到 maxOutputChannels
+            channels = device_info.get('maxInputChannels') or device_info.get('maxOutputChannels') or 2
+            channels = min(channels, 2)
+            sample_rate = int(device_info.get('defaultSampleRate', 48000))
+            self.device_rate = sample_rate
+            self.device_channels = channels
             self.stream = self.mic.open(format=pyaudio.paInt16,
-                                        channels=1,
-                                        rate=16000,
+                                        channels=channels,
+                                        rate=sample_rate,
                                         input=True,
-                                        input_device_index=self.stereo_mix_index)
+                                        input_device_index=self.loopback_index)
+            self.text_queue.put(f"{self.time_str}: Loopback device: {device_info['name']}, rate={sample_rate}, ch={channels}\n")
         elif self.voice_source == "mic":
+            self.mic = pyaudio.PyAudio()
+            self.device_rate = 16000
+            self.device_channels = 1
             self.stream = self.mic.open(format=pyaudio.paInt16,
                                         channels=1,
                                         rate=16000,
@@ -258,12 +285,12 @@ class Callback(RecognitionCallback):
 
     def on_error(self, message) -> None:
         self.text_queue.put(f"{self.time_str}: RecognitionCallback error: {message.message}\n")
-        # Stop and close the audio stream if it is running
+        # 出错时尝试停止并关闭音频流（PyAudio Stream 用 is_active()/stop_stream()）
         try:
-            if self.stream.active:
-                self.stream.stop()
+            if self.stream is not None and self.stream.is_active():
+                self.stream.stop_stream()
                 self.stream.close()
-        except Exception as e:
+        except Exception:
             pass
 
     def on_event(self, result: RecognitionResult) -> None:
@@ -281,22 +308,43 @@ class Callback(RecognitionCallback):
         return time.strftime("%Y%m%d-%H%M%S", time.localtime())
 
 
-def run_asr_process(log_filename, text_queue, apikey, model, stereo_mix_index, source="stereo mix"):
+def run_asr_process(log_filename, text_queue, apikey, model, loopback_index, source="system audio"):
     dashscope.api_key = apikey
-    callback = Callback(log_file=log_filename, text_queue=text_queue, stereo_mix_index=stereo_mix_index, voice_source=source)
-    sample_rate = 16000  # 采样率
+    callback = Callback(log_file=log_filename, text_queue=text_queue, loopback_index=loopback_index, voice_source=source)
+    target_rate = 16000  # ASR 采样率
     format_pcm = 'pcm'  # 音频数据格式
     block_size = 3200  # 每次读取的帧数
     recognition = Recognition(
                 model=model,
                 format=format_pcm,
-                sample_rate=sample_rate,
+                sample_rate=target_rate,
                 semantic_punctuation_enabled=False,
                 callback=callback)
     recognition.start()
     while True:
         if callback.stream:
             data = callback.stream.read(block_size, exception_on_overflow=False)
+            # loopback 设备采样率可能为 48000Hz、双声道，需要转换为 16000Hz 单声道
+            if source == "system audio" and callback.device_channels >= 2:
+                samples = struct.unpack('<' + 'h' * (len(data) // 2), data)
+                ch = callback.device_channels
+                # 双声道转单声道：取平均
+                mono = []
+                for i in range(0, len(samples), ch):
+                    mono.append(sum(samples[i:i+ch]) // ch)
+                data = struct.pack('<' + 'h' * len(mono), *mono)
+            if source == "system audio" and callback.device_rate != target_rate:
+                samples = struct.unpack('<' + 'h' * (len(data) // 2), data)
+                ratio = callback.device_rate / target_rate
+                resampled = []
+                pos = 0.0
+                while int(pos) < len(samples) - 1:
+                    idx = int(pos)
+                    frac = pos - idx
+                    val = int(samples[idx] * (1 - frac) + samples[idx + 1] * frac)
+                    resampled.append(val)
+                    pos += ratio
+                data = struct.pack('<' + 'h' * len(resampled), *resampled)
             recognition.send_audio_frame(data)
         else:
             break
@@ -380,7 +428,7 @@ class ScreenCapture(object):
         self.frame_asr.pack(fill="x", padx=2, pady=(5,2))
         tk.Label(self.frame_asr, text="Model").grid(row=0, column=0, sticky="ew", padx=2, pady=2)
         self.ety_model = tk.Entry(self.frame_asr, width=18)
-        self.ety_model.insert(0, "fun-asr-realtime-2025-11-07")
+        # 模型名由 _load_config_to_ui() 从 config.json 读入，这里不再硬编码默认值
         self.ety_model.grid(row=0, column=1, sticky="ew", padx=2, pady=2)
         tk.Label(self.frame_asr, text="dashscope API Key").grid(row=1, column=0, sticky="ew", padx=2, pady=2)
         self.ety_api_key = tk.Entry(self.frame_asr, show="*", width=18)
@@ -391,15 +439,15 @@ class ScreenCapture(object):
         self.btn_asr_start.grid(row=4, column=0, sticky="ew", padx=2, pady=2)
         self.btn_asr_stop = tk.Button(self.frame_asr, text="Stop ASR", command=self.stop_asr, state="disabled")
         self.btn_asr_stop.grid(row=4, column=1, sticky="ew", padx=2, pady=2)
-        # 两个勾选框分别选择是否开启麦克风和立体声混音监听，默认都勾选        
-        self.stereo_mix_index = None
-        self._check_stereo_mix()
+        # 麦克风和系统音频捕获选项
+        self.loopback_index = None
+        self._check_loopback_device()
         self.use_microphone = tk.BooleanVar(value=True)
-        self.use_stereo_mix = tk.BooleanVar(value=True if self.stereo_mix_index else False)
+        self.use_system_audio = tk.BooleanVar(value=True if self.loopback_index else False)
         self.check_microphone = tk.Checkbutton(self.frame_asr, text="Microphone", variable=self.use_microphone, command=self._swtch_btn_asr_start)
         self.check_microphone.grid(row=3, column=0, sticky="ew", padx=2, pady=2)
-        self.check_stereo_mix = tk.Checkbutton(self.frame_asr, text="Stereo Mix", variable=self.use_stereo_mix, state="normal" if self.stereo_mix_index else "disabled", command=self._swtch_btn_asr_start)
-        self.check_stereo_mix.grid(row=3, column=1, sticky="ew", padx=2, pady=2)
+        self.check_system_audio = tk.Checkbutton(self.frame_asr, text="System Audio", variable=self.use_system_audio, state="normal" if self.loopback_index else "disabled", command=self._swtch_btn_asr_start)
+        self.check_system_audio.grid(row=3, column=1, sticky="ew", padx=2, pady=2)
 
         self.frame_asr.columnconfigure(0, weight=1)
         self.frame_asr.columnconfigure(1, weight=1)
@@ -532,12 +580,6 @@ class ScreenCapture(object):
         if self.is_setting_sys_not_sleep:
             self.is_setting_sys_not_sleep = set_system_sleep_state(False, self.text_log)
    
-    def select_log_path(self):
-        path = filedialog.askdirectory()
-        if path:
-            self.ety_log_path.delete(0, "end")
-            self.ety_log_path.insert(0, path)
-
     def _init_auto_save_dir(self):
         folder = time.strftime("%Y%m%d-%H%M%S", time.localtime())
         save_dir = get_resource_path(folder)
@@ -548,18 +590,18 @@ class ScreenCapture(object):
         self._text_log_show(f"{self.time_str}: voice recognition Log and images will be saved to {self.save_path}\n")
 
     def _swtch_btn_asr_start(self):
-        if self.use_microphone.get() or self.use_stereo_mix.get():
+        if self.use_microphone.get() or self.use_system_audio.get():
             self.btn_asr_start['state'] = 'normal'
         else:
             self.btn_asr_start['state'] = 'disabled'
 
-    def _check_stereo_mix(self):
-        mic = pyaudio.PyAudio()
-        self.stereo_mix_index = find_stereo_mix_device(mic)
-        if self.stereo_mix_index is None:
-            self._text_log_show(f"{self.time_str}: Stereo Mix not found! Please activate the stereo mix device if you want to listen system output. See help documentation for more details.\n", "red")
+    def _check_loopback_device(self):
+        self.loopback_index = find_loopback_device()
+        if self.loopback_index is None:
+            self._text_log_show(f"{self.time_str}: WASAPI loopback device not found. System audio capture unavailable.\n", "red")
+            self._text_log_show(f"  Check: 1) Windows audio output device exists  2) pyaudiowpatch installed correctly\n", "gray")
         else:
-            self._text_log_show(f"{self.time_str}: Can use 'Stereo Mix' device (index={self.stereo_mix_index}) as audio source.\n", "green")
+            self._text_log_show(f"{self.time_str}: Found WASAPI loopback device (index={self.loopback_index}). System audio capture ready.\n", "green")
 
     def _check_has_input_api_model(self):
         # 获取model
@@ -644,18 +686,18 @@ class ScreenCapture(object):
         self.log_filename = os.path.join(self.save_path, f"asr_log_{time.strftime('%Y%m%d-%H%M%S', time.localtime())}.txt")
         
         if self.use_microphone.get():
-            self.asr_proc_mic = multiprocessing.Process(target=run_asr_process, args=(self.log_filename, self.asr_queue, self.apikey, self.model, self.stereo_mix_index, "mic"))
+            self.asr_proc_mic = multiprocessing.Process(target=run_asr_process, args=(self.log_filename, self.asr_queue, self.apikey, self.model, self.loopback_index, "mic"))
             self.asr_proc_mic.daemon = True
             self.update_mic_state('on')
             self.asr_proc_mic.start()
-        if self.use_stereo_mix.get():
-            self.asr_proc_stereo = multiprocessing.Process(target=run_asr_process, args=(self.log_filename, self.asr_queue, self.apikey, self.model, self.stereo_mix_index, "stereo mix"))
-            self.asr_proc_stereo.daemon = True
-            self.update_stereo_mix_state('on')
-            self.asr_proc_stereo.start()
-        
+        if self.use_system_audio.get():
+            self.asr_proc_system = multiprocessing.Process(target=run_asr_process, args=(self.log_filename, self.asr_queue, self.apikey, self.model, self.loopback_index, "system audio"))
+            self.asr_proc_system.daemon = True
+            self.update_system_audio_state('on')
+            self.asr_proc_system.start()
+
         self.check_microphone['state'] = 'disabled'
-        self.check_stereo_mix['state'] = 'disabled'
+        self.check_system_audio['state'] = 'disabled'
         
         self.is_asr_queue_checking = True
         self.poll_asr_queues()
@@ -665,29 +707,33 @@ class ScreenCapture(object):
 
     def stop_asr(self):
         self.is_speech_recognizing = False
-        self.is_asr_queue_checking = True
+        # 注意：此处不关闭轮询。要等两个 ASR 子进程都已 terminate+join 后，
+        # 再排空残余消息并关闭轮询（见本函数末尾），以免漏消息或读写冲突报错。
 
         self.btn_asr_start['state'] = 'normal'
         self.btn_asr_stop['state'] = 'disabled'
 
         self.check_microphone['state'] = 'normal'
-        if self.stereo_mix_index:
-            self.check_stereo_mix['state'] = 'normal'
+        if self.loopback_index:
+            self.check_system_audio['state'] = 'normal'
 
         if not self.is_capturing:
             self.btn_all_start['state'] = 'normal'
             self.btn_all_stop['state'] = 'disabled'
-        
-        # 关闭进程
+
+        # 关闭进程：terminate + join 确保两个 ASR 子进程都已停止
         if hasattr(self, 'asr_proc_mic') and self.asr_proc_mic.is_alive():
             self.asr_proc_mic.terminate()
             self.asr_proc_mic.join()
             self.update_mic_state('off')
-        if hasattr(self, 'asr_proc_stereo') and self.asr_proc_stereo.is_alive():
-            self.asr_proc_stereo.terminate()
-            self.asr_proc_stereo.join()
-            self.update_stereo_mix_state('off')
-        
+        if hasattr(self, 'asr_proc_system') and self.asr_proc_system.is_alive():
+            self.asr_proc_system.terminate()
+            self.asr_proc_system.join()
+            self.update_system_audio_state('off')
+
+        # 两个子进程都已停止后，最后一次排空队列中的残余消息，再关闭轮询
+        self._drain_asr_queue()
+        self.is_asr_queue_checking = False
 
         self.text_asr.insert("end", f"{self.time_str}: Speech recognition stopped.\n")
         self.text_asr.see("end")
@@ -696,9 +742,8 @@ class ScreenCapture(object):
             self.is_setting_sys_not_sleep = set_system_sleep_state(False, self.text_log)
         ...
 
-    def poll_asr_queues(self):
-        if not self.is_asr_queue_checking:
-            return
+    def _drain_asr_queue(self):
+        """取出 ASR 队列中已到达的所有消息，显示到界面并写入日志。"""
         while not self.asr_queue.empty():
             msg = self.asr_queue.get()
             # 检查是否为截图文件名消息
@@ -714,6 +759,11 @@ class ScreenCapture(object):
             else:
                 self.text_asr.insert("end", msg)
                 self.text_asr.see("end")
+
+    def poll_asr_queues(self):
+        if not self.is_asr_queue_checking:
+            return
+        self._drain_asr_queue()
         self.root.after(200, self.poll_asr_queues)  # 200ms轮询一次
 
     def show_state_window(self):
@@ -738,8 +788,8 @@ class ScreenCapture(object):
         self.label_mic_listening_state = tk.Label(self.state_window, text="Mic", bg="orange", font=("Arial", 8))
         self.label_mic_listening_state.place(relx=0, rely=0.5, relwidth=0.5, relheight=0.5)
 
-        self.label_stereo_mix_listening_state = tk.Label(self.state_window, text="Mix", bg="orange", font=("Arial", 8))
-        self.label_stereo_mix_listening_state.place(relx=0.5, rely=0.5, relwidth=0.5, relheight=0.5)
+        self.label_system_audio_state = tk.Label(self.state_window, text="Sys", bg="orange", font=("Arial", 8))
+        self.label_system_audio_state.place(relx=0.5, rely=0.5, relwidth=0.5, relheight=0.5)
 
         self.state_window.bind("<Button-1>", self._state_window_on_start)
         self.state_window.bind("<B1-Motion>", self._state_window_on_drag)
@@ -779,9 +829,6 @@ class ScreenCapture(object):
         x, y = event.x, event.y
         self.state_window.geometry(f"{40}x{40}+{self.state_window.winfo_x() + x - self.mouse_x}+{self.state_window.winfo_y() + y - self.mouse_y}")
 
-    def _state_window_on_stop(self, event):
-        self.mouse_x, self.mouse_y = 0, 0
-
     def update_monitoring_state(self, func='off'):
         if func == 'on':
             self.label_monitoring_state["bg"] = "red"
@@ -801,11 +848,11 @@ class ScreenCapture(object):
         elif func == 'off':
             self.label_mic_listening_state["bg"] = "orange"
 
-    def update_stereo_mix_state(self, func='off'):
+    def update_system_audio_state(self, func='off'):
         if func == 'on':
-            self.label_stereo_mix_listening_state["bg"] = "red"
+            self.label_system_audio_state["bg"] = "red"
         elif func == 'off':
-            self.label_stereo_mix_listening_state["bg"] = "orange"
+            self.label_system_audio_state["bg"] = "orange"
 
     def get_capture_window(self):
         self.root.iconify() # 最小化窗口

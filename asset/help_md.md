@@ -8,7 +8,7 @@ The first line displays the status of the screenshot capture function:
 The second line displays the status of the speech recognition function:
 
 - The left indicator Mic turns red to show it is currently listening to microphone input.
-- The right indicator Mix turns red if it is currently monitoring stereo mix audio; if the Mix indicator is gray, stereo mix is unavailable.
+- The right indicator Sys turns red if it is currently capturing system audio (WASAPI loopback); if the Sys indicator is gray, no system audio loopback device was found.
 
 
 Right-click the floating window to control the start/stop screenshot and recognition.
@@ -16,11 +16,11 @@ Right-click the floating window to control the start/stop screenshot and recogni
 # LLM service for voice recognition
 
 *****
-You need to enable stereo mix on your computer to capture system audio output! Here's how:
+**>>>> Updated on 2026.6.30: System audio is now captured via WASAPI loopback — Stereo Mix is no longer required, and there is no feedback/echo risk. <<<<**
 
-Settings - System - Sound - All sound devices - Enable Stereo Mix
+It automatically captures whatever is playing through the Windows **default output device**, using that device's native sample rate and channels (auto down-mixed to mono and resampled to 16 kHz for recognition). No manual setup is needed, and it adapts to different PCs automatically.
 
-**>>> Note that if you enable stereo mix, the volume may be too high and cause feedback. Be careful to protect your ears! <<<**
+**>>> Note: make sure the meeting audio is actually playing through the system default output device; otherwise the captured stream will be silent. <<<**
 *****
 
 This feature uses the real-time speech recognition model provided by Alibaba Cloud: paraformer-realtime-v2, so an API key is required for connection.
@@ -61,16 +61,18 @@ The computer will not enter sleep mode or turn off the screen during screen and 
 
 第二行显示语音识别功能的状态：
 - 左侧指示灯 Mic 变红，表示当前正在监听麦克风输入。
-- 右侧指示灯 Mix 变红，表示当前正在监控立体声混音音频；若 Mix 指示灯为灰色，则表示立体声混音不可用。
+- 右侧指示灯 Sys 变红，表示当前正在捕获系统音频（WASAPI loopback）；若 Sys 指示灯为灰色，则表示未找到系统音频 loopback 设备。
 
 右键点击浮动窗口，可以控制开始/停止截图、识别。
 
 # 语音识别的LLM服务
 
 *****
-需要启动电脑的立体声混音，才能够捕捉系统输出！具体方法：设置-系统-声音-所有声音设备-打开立体声混音
+**>>>>2026.6.30更新：系统音频改为通过 WASAPI loopback 捕获——不再需要开启立体声混音，也不会产生啸叫。<<<<**
 
-**>>> 注意，如果开启立体声混音，音量调节过大，可能会产生啸叫，注意保护耳朵！<<<**
+它会自动捕获 Windows **默认输出设备** 正在播放的声音，按设备原生采样率与声道采集（自动下混为单声道并重采样到 16 kHz 送入识别），无需任何手动设置，换到不同电脑也能自适应。
+
+**>>> 注意：请确保会议声音是从系统默认输出设备播出的，否则捕获到的会是静音。<<<**
 *****
 
 本功能使用阿里云提供的实时语音识别模型：paraformer-realtime-v2，因此连接时需要API密钥。

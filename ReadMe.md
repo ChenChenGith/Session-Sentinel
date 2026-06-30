@@ -10,6 +10,7 @@ Requirment:
 - screeninfo>=0.8.1
 - dashscope>=1.24.5
 - pyaudio>=0.2.14
+- PyAudioWPatch>=0.2.14   (for WASAPI loopback system-audio capture)
 
 # Usage:
 
@@ -18,6 +19,10 @@ Requirment:
 [How to use: text](./asset/help_md.md)
 
 # Update
+
+## 20260630
+
+System audio is now captured via **WASAPI loopback** instead of Stereo Mix — no need to enable Stereo Mix, no feedback/echo, and it auto-detects the Windows default output device (adapts to any PC). Model/Key/LLM/Prompt settings are managed via `config.json` (auto-created with defaults on first run).
 
  Added a new position to fill in a custom real-time speech recognition model
 
